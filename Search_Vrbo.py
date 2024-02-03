@@ -154,3 +154,4 @@ def insert_into_db(data):
 vrbo_url = "https://www.vrbo.com/search?adults=2&d1=&d2=&destination=Seattle+%28and+vicinity%29%2C+Washington%2C" \
            "+United+States+of+America&endDate=&regionId=178307&semdtl=&sort=RECOMMENDED&startDate=& "
 scrape_vrbo(vrbo_url)
+
