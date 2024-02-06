@@ -1,4 +1,6 @@
 import base64
+import io
+import logging
 import sqlite3
 import traceback
 import zlib
@@ -6,8 +8,10 @@ from io import BytesIO
 
 import requests
 from PIL import Image as PilImage
+from PIL import Image
 from kivy.atlas import CoreImage
 from kivy.config import Config
+from kivy.core.image import ImageLoader
 from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.properties import ObjectProperty, ListProperty, StringProperty, NumericProperty
@@ -18,15 +22,16 @@ from kivy.uix.screenmanager import Screen, ScreenManager
 from kivy.uix.scrollview import ScrollView
 from kivymd.app import MDApp
 
-Config.set('kivy', 'log_level', 'debug')
+import Search_Vrbo
 
+Config.set('kivy', 'log_level', 'debug')
 kv = """
 ScreenManager:
     Home:
         name: "home_screen"
     ListingScreen:
         name: "listing_screen"
-        
+
 <ImageItem>:
     orientation: 'vertical'
     spacing: '5dp'
@@ -85,225 +90,80 @@ ScreenManager:
                 padding: "10dp"
 """
 
-from kivy.uix.boxlayout import BoxLayout
+from kivymd.app import MDApp
+from kivymd.uix.screen import MDScreen
+from kivymd.uix.imagelist import MDSmartTile
+from kivy.uix.scrollview import ScrollView
 
 
-# ... (existing code)
+class Home(MDApp):
+    def __init__(self, images):
+        super().__init__()
+        self.images = images
+        self.db_connection = sqlite3.connect('data/listing_data.db')
+        self.cursor = self.db_connection.cursor()
 
-class ImageItem(BoxLayout):
-    beds = ObjectProperty(None)
-    image_sources = ListProperty([])
-    price = StringProperty('')
-    ratings = NumericProperty(0)
-
-    def __init__(self, image_sources=None, price='', beds='', ratings=0, **kwargs):
-        super(ImageItem, self).__init__(**kwargs)
-        self.create_image_widget(image_sources, price, beds, ratings)
-
-    def create_image_widget(self, image_sources, price, beds, ratings):
+    def get_image_url(self, image_source):
         try:
-            print(f"Creating image widget with sources: {image_sources}")
+            # Assuming image_source is the URL of the image stored in the database
+            query = "SELECT image_source FROM vrbo_listings WHERE image_source = ?"
+            self.cursor.execute(query, (image_source,))
+            result = self.cursor.fetchone()
+            if result:
 
-            if image_sources != "Not Available" and all(image_sources):
-                # Decompress the image data
-                try:
-                    # Decode base64-encoded and zlib-compressed image data
-                    decoded_data = zlib.decompress(base64.b64decode(image_sources))
-
-                    # Convert decoded binary data to a list of image sources
-                    decompressed_images = decoded_data.decode().split(',')
-
-                    # Initialize the size of the combined image
-                    combined_width, combined_height = 0, 0
-
-                    # Fetch each image part and combine them
-                    image_parts = []
-                    for base64_image in decompressed_images:
-                        try:
-                            # Decode base64-encoded image
-                            image_data = base64.b64decode(base64_image)
-                            part_image = PilImage.open(BytesIO(image_data))
-
-                            # Update combined image size based on the dimensions of the part image
-                            combined_width = max(combined_width, part_image.width)
-                            combined_height += part_image.height
-
-                            image_parts.append(part_image)
-                        except Exception as fetch_error:
-                            print(f"Error decoding base64 image: {fetch_error}")
-                            # Handle the case where decoding fails (e.g., replace with a placeholder image)
-                            image_parts.append(PilImage.new('RGB', (100, 100), color='red'))
-
-                    # Create a new combined image with the calculated size
-                    combined_image = PilImage.new('RGB', (combined_width, combined_height))
-
-                    # Paste each image part into the combined image
-                    y_offset = 0
-                    for part_image in image_parts:
-                        combined_image.paste(part_image, (0, y_offset))
-                        y_offset += part_image.height
-
-                    # Convert combined image to Kivy Image
-                    buffer = BytesIO()
-                    combined_image.save(buffer, format='png')
-                    buffer.seek(0)
-                    kivy_image = KivyImage(texture=CoreImage(BytesIO(buffer.getvalue()), ext='png').texture)
-                    self.add_widget(kivy_image)
-
-                    # Add Labels for details
-                    details_label = Label(text=f"Price: {price}\nBeds: {beds}\nRatings: {ratings}", halign='center')
-                    self.add_widget(details_label)
-
-                except zlib.error as zlib_error:
-                    print(f"Error during decompression: {zlib_error}")
-                except Exception as e:
-                    print(f"Error creating image widget: {e}")
-                    print(f"Failed image_sources: {image_sources}, price: {price}, beds: {beds}, ratings: {ratings}")
-
-        except Exception as outer_exception:
-            print(f"An error occurred in the outer try block: {outer_exception}")
-
-
-class Home(Screen):
-    def __init__(self, **kwargs):
-        super(Home, self).__init__(**kwargs)
-        self.callback()
-
-    def callback(self):
-        print("Grabbing image from the database:")
-        scroll_view = ScrollView(size_hint=(1, None), size=(Window.width, Window.height))
-        wall_layout = GridLayout(cols=3, size_hint_y=None)
-        wall_layout.bind(minimum_height=wall_layout.setter('height'))
-
-        try:
-            image_items = self.load_images_from_db()
-            if image_items:
-                for item in image_items:
-                    wall_layout.add_widget(item)
-                scroll_view.add_widget(wall_layout)
-                self.add_widget(scroll_view)
+                return zlib.decompress(base64.urlsafe_b64decode(result[0]))  # Decode the byte string using Latin-1 encoding
             else:
-                print("No images found in the database.")
+                print("Results: ", result)
+                print(f"No image found in the database for image source: {image_source}")
         except Exception as e:
-            print("Error in callback:", e)
-            traceback.print_exc()
+            print(f"Error fetching image from database: {e}")
+        return None
 
-    def load_images_from_db(self):
-        image_items = []
-        conn = sqlite3.connect('data/listing_data.db')
-        cursor = conn.cursor()
+    def create_image_grid(self):
+        # Customize this function based on the desired layout and appearance
+        # of the image grid.
+        # Here, I'm using a simple GridLayout with fixed columns for demonstration.
+        from kivy.uix.gridlayout import GridLayout
 
-        try:
-            cursor.execute('SELECT image_source, price, beds, ratings FROM vrbo_listings')
-            rows = cursor.fetchall()
+        grid_layout = GridLayout(cols=3, spacing=10, size_hint_y=None)
+        grid_layout.bind(minimum_height=grid_layout.setter('height'))
+        return grid_layout
 
-            if rows:
-                for row in rows:
-                    image_source, price, beds, ratings = row
-                    print(f"Processing image_source: {image_source}, type: {type(image_source)}")
-                    # Check if image_source is not None before processing
-                    if image_source is not None:
-                        try:
-                            # Attempt to convert ratings to float
-                            ratings = float(ratings) if ratings.replace('.', '', 1).isdigit() else 0.0
-
-                            # Wrap the ImageItem creation in a try-except block
-                            try:
-                                item = ImageItem(image_sources=[image_source], price=price, beds=beds, ratings=ratings)
-                                image_items.append(item)
-                            except Exception as item_creation_error:
-                                print(f"Error creating ImageItem for {image_source}: {item_creation_error}")
-                        except ValueError as rating_conversion_error:
-                            print(f"Attempting to convert ratings to float: {ratings}")
-                            print(f"Error processing image source: {image_source}\n{rating_conversion_error}")
-                            ratings = 0.0
-                        except Exception as e:
-                            print(f"Error processing image: {e}")
-        except sqlite3.Error as db_error:
-            print(f"Error fetching images from the database: {db_error}")
-        except Exception as general_error:
-            print(f"General error in load_images_from_db: {general_error}")
-        finally:
-            conn.close()
-
-        return image_items
-
-    def load_images_from_db(self):
-        image_items = []
-        conn = sqlite3.connect('data/listing_data.db')
-        cursor = conn.cursor()
-
-        try:
-            cursor.execute('SELECT image_source, price, beds, ratings FROM vrbo_listings')
-            rows = cursor.fetchall()
-
-            if rows:
-                for row in rows:
-                    image_source, price, beds, ratings = row
-                    print(f"Processing image_source: {image_source}, type: {type(image_source)}")
-                    # Check if image_source is not None before processing
-                    if image_source is not None:
-                        try:
-                            # Decode base64-encoded and zlib-compressed image data
-                            decoded_data = zlib.decompress(base64.b64decode(image_source))
-
-                            # Convert decoded binary data to a list of image sources
-                            decompressed_images = decoded_data.decode().split(',')
-
-                            # Wrap the ImageItem creation in a try-except block
-                            try:
-                                item = ImageItem(image_sources=decompressed_images, price=price, beds=beds,
-                                                 ratings=ratings)
-                                image_items.append(item)
-                            except Exception as item_creation_error:
-                                print(f"Error creating ImageItem for {image_source}: {item_creation_error}")
-                        except Exception as decoding_error:
-                            print(f"Error decoding image source: {image_source}\n{decoding_error}")
-        except sqlite3.Error as db_error:
-            print(f"Error fetching images from the database: {db_error}")
-        except Exception as general_error:
-            print(f"General error in load_images_from_db: {general_error}")
-        finally:
-            conn.close()
-
-        return image_items
-
-
-def update_height(self, img, *args):
-    img.height = img.width / img.image_ratio if img.image_ratio else 1
-
-
-def perform_search(self):
-    self.sm.current = 'listing_screen'
-    query = self.sm.get_screen('home_screen').ids.search_input.text
-    print(f"Performing search for: {query}")
-
-
-class ListingScreen(Screen):
-    pass
-
-
-class ArtemisApp(MDApp):
     def build(self):
-        try:
-            self.root = Builder.load_string(kv)
-            screen_manager = ScreenManager()
-            screen_manager.add_widget(Home(name='home_screen'))
-            screen_manager.add_widget(ListingScreen(name='listing_screen'))
-            return self.root
-        except Exception as e:
-            print(f"An error occurred: {e}")
+        screen = MDScreen()
+        scroll_view = ScrollView()
 
-    def on_error(self, *args):
-        print(f"Kivy Error: {args}")
+        # Create a GridLayout to display images
+        grid_layout = self.create_image_grid()
 
-    def create_image_list(self, image_source):
-        for source in image_source:
-            item = ImageItem(text="Image", secondary_text="Secondary text")
-            item.image_source = source
-            self.root.ids.image_list.add_widget(item)
+        # Add MDImage widgets to the GridLayout
+        for image_data in self.images:
+            image_sources = image_data.get('image_sources', [])
+
+            image_url = self.get_image_url(image_sources)
+            if image_url:
+                # Create an AsyncImage widget with the URL as the source
+                image_widget = AsyncImage(
+                    source=image_url,
+                    allow_stretch=True
+                )
+                grid_layout.add_widget(image_widget)
+            else:
+                # Handle the case where image URL is not available
+                print("No image URL found for this listing")
+
+        # Add the GridLayout to the ScrollView
+        scroll_view.add_widget(grid_layout)
+        screen.add_widget(scroll_view)
+
+        return screen
 
 
-if __name__ == '__main__':
-    ArtemisApp().run()
+if __name__ == "__main__":
+    vrbo_url = "https://www.vrbo.com/search?adults=2&d1=&d2=&destination=Seattle+%28and+vicinity%29%2C+Washington%2C" \
+               "+United+States+of+America&endDate=&regionId=178307&semdtl=&sort=RECOMMENDED&startDate=& "
+    scraped_data = Search_Vrbo.scrape_vrbo(vrbo_url)
+    Home(scraped_data).run()
+
+
 
