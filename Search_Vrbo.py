@@ -19,7 +19,39 @@ logging.basicConfig(
     filename='scraping.log'
 )
 
+
+def create_table():
+    conn = sqlite3.connect('data/listing_data.db')
+    cursor = conn.cursor()
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS vrbo_listings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            image_source BLOB,
+            price TEXT,
+            beds TEXT,
+            ratings TEXT
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+
+def insert_into_db(image_data, price, beds, ratings):
+    conn = sqlite3.connect('data/listing_data.db')
+    cursor = conn.cursor()
+    try:
+        cursor.execute('''
+        INSERT INTO vrbo_listings (image_source, price, beds, ratings) VALUES (?, ?, ?, ?)
+    ''', (image_data, price, beds, ratings))
+        print("Insertion Successful")
+    except Exception as E:
+        (print('Failed to insert data: ', E))
+    conn.commit()
+    conn.close()
+
+
 def scrape_vrbo(url):
+    create_table()
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
     try:
         driver.get(url)
@@ -51,20 +83,21 @@ def scrape_vrbo(url):
             if ab_img:
                 for img in ab_img:
                     src = img.get('src')
+                    # print(src)
                     if src:
-                        # Assume src is a URL, adjust if it's a file path or other
                         response = requests.get(src)
                         image_data = response.content
-                        print(image_data)
-                        print(f'Src: {len(image_data)}')
 
-                        compressed_data = zlib.compress(image_data)
-                        unit_data['image_sources'].append(compressed_data)
+                        compressed_image = zlib.compress(base64.urlsafe_b64encode(image_data))
+                        print("Compression len:", len(compressed_image))
+                        insert_into_db(compressed_image, unit_data['price'], unit_data['beds'], unit_data['ratings'])
 
+                        unit_data['image_sources'].append(compressed_image)
                         print(f"Original data length: {len(image_data)}")
-                        print(f"Compressed data length: {len(compressed_data)}")
-            else:
-                unit_data['image_sources'].append(None)
+
+                    else:
+                        unit_data['image_sources'].append(None)
+                        print("Image data is missing")
 
             if ab_price_per_night:
                 unit_data['price'] = ab_price_per_night.text.strip()
@@ -82,75 +115,10 @@ def scrape_vrbo(url):
         driver.quit()
 
     logging.info(f"Scraping URL: {url}")
-
-    insert_into_db(data)
-    print(data)
+    return data
 
 
-def download_image(image_sources):
-    image_blobs = []
-
-    for image_data in image_sources:
-        try:
-            if image_data:
-                jpeg_data = zlib.compress(image_data)
-                image_blobs.append(base64.urlsafe_b64encode(jpeg_data))
-            else:
-                image_blobs.append(None)
-        except Exception as e:
-            print(f"Error processing image: {e}")
-            image_blobs.append(None)
-
-    return image_blobs
-
-
-def insert_into_db(data):
-    conn = sqlite3.connect('data/listing_data.db')
-    cursor = conn.cursor()
-    invalid_count = 0
-
-    try:
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS vrbo_listings (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                price TEXT,
-                beds TEXT,
-                ratings TEXT,
-                image_source BLOB
-            )
-        ''')
-
-        for row in data:
-            if 'image_sources' in row and 'price' in row and 'beds' in row and 'ratings' in row:
-                price = row['price']
-                beds = row['beds']
-                ratings = row['ratings']
-
-                for image_data in row['image_sources']:
-                    try:
-                        cursor.execute('''
-                            INSERT INTO vrbo_listings (price, beds, ratings, image_source)
-                            VALUES (?, ?, ?, ?)
-                        ''', (str(price), str(beds), str(ratings), image_data))
-                        print(f"Inserting values: {price}, {beds}, {ratings}, Image data")
-                    except Exception as image_insert_error:
-                        print(f"Error inserting image into database: {image_insert_error}")
-                        invalid_count += 1
-
-                if not row['image_sources']:
-                    invalid_count += 1
-
-        conn.commit()
-    except sqlite3.Error as e:
-        print(f"Error inserting into database: {e}")
-        conn.rollback()
-    finally:
-        conn.close()
-
-    if invalid_count > 0:
-        print(f"Ignore: {invalid_count} invalid rows found.")
-
-# Example URL of VRBO listings
+# Example usage:
 vrbo_url = "https://www.vrbo.com/search?adults=2&d1=&d2=&destination=Seattle+%28and+vicinity%29%2C+Washington%2C" \
            "+United+States+of+America&endDate=&regionId=178307&semdtl=&sort=RECOMMENDED&startDate=& "
 scrape_vrbo(vrbo_url)
