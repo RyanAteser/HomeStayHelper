@@ -1,4 +1,6 @@
 import logging
+import time
+
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -12,12 +14,15 @@ import sqlite3
 from io import BytesIO
 import tempfile
 
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
+
 
 # Define custom exceptions
 class ScrapingError(Exception):
     pass
+
 
 class DatabaseError(Exception):
     pass
@@ -64,81 +69,68 @@ def insert_into_db(image_data, price, beds, ratings):
     finally:
         cursor.close()
         conn.close()
-
-def scrape_vrbo(url, max_pages=None):
-    # Initialize Selenium WebDriver
+def scrape_airbnb(url, max_pages=None):
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
     try:
         driver.get(url)
         data = []
 
-        page_count = 0
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-stid='apply-date-selector']"))).click()
+        # Wait for the search results to load
+        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "_8ssblpx")))
 
-        # Simulate scrolling to trigger lazy loading
-        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-
-        # Wait for images to load
-        WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "img")))
+        # Simulate scrolling to load more listings
+        scroll_height = driver.execute_script("return document.body.scrollHeight")
+        while True:
+            driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+            time.sleep(3)  # Adjust the sleep time as needed
+            new_scroll_height = driver.execute_script("return document.body.scrollHeight")
+            if new_scroll_height == scroll_height:
+                break
+            scroll_height = new_scroll_height
 
         # Parse the page source with BeautifulSoup
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        listings = soup.find_all('div', class_='uitk-spacing uitk-spacing-margin-blockstart-three')
+        listings = soup.find_all('div', class_=' dir dir-ltr')
 
         logging.info(f"Scraping URL: {url}")
 
         for listing in listings:
-    # Extracting image sources
-            ab_img = listing.find_all('img', class_='uitk-image-media')
+            # Extracting image source
+            image = listing.find('img', class_='itu7ddv atm_e2_idpfg4 atm_vy_idpfg4 atm_mk_stnw88 atm_e2_1osqo2v__1lzdix4 atm_vy_1osqo2v__1lzdix4 i1cqnm0r atm_jp_pyzg9w atm_jr_nyqth1 i1de1kle atm_vh_yfq0k3 dir dir-ltr')
+            image_source = image['src'] if image else None
 
-    # Extracting price per night
-            ab_price_per_night = listing.find('div', class_='uitk-text uitk-type-300 uitk-text-default-theme is-visually-hidden')
-            price = ab_price_per_night.text.strip() if ab_price_per_night else "Not available"
+            # Extracting price per night
+            price_element = listing.find('span', class_='_1y74zjx')
+            price = price_element.text.strip() if price_element else "Not available"
 
-    # Extracting number of beds
-            ab_beds = listing.find('div', class_='uitk-text uitk-text-spacing-half truncate-lines-2 uitk-type-300 uitk-text-default-theme')
-            beds = ab_beds.text.strip() if ab_beds else "Not available"
+            # Extracting number of beds
+            beds_element = listing.find('div', class_='a8jt5op atm_3f_idpfg4 atm_7h_hxbz6r atm_7i_ysn8ba atm_e2_t94yts atm_ks_zryt35 atm_l8_idpfg4 atm_mk_stnw88 atm_vv_1q9ccgz atm_vy_t94yts dir dir-ltr')
+            beds = beds_element.text.strip() if beds_element else "Not available"
 
-    # Extracting ratings
-            ab_ratings = listing.find('span', class_='uitk-text uitk-type-500 uitk-type-bold uitk-text-default-theme')
-            ratings = ab_ratings.text.strip() if ab_ratings else "Not available"
+            # Extracting ratings
+            ratings_element = listing.find('span', class_='t1a9j9y7 atm_da_1ko3t4y atm_dm_kb7nvz atm_fg_h9n0ih dir dir-ltr')
+            ratings = ratings_element.text.strip() if ratings_element else "Not available"
 
             unit_data = {
-        'image_sources': [],
-        'price': price,
-        'beds': beds,
-        'ratings': ratings
+                'image_source': image_source,
+                'price': price,
+                'beds': beds,
+                'ratings': ratings
             }
 
-            for img in ab_img:
-                src = img.get('src')
-
-                if src:
-                    response = requests.get(src)
-                    image_data = response.content
-                    compressed_image = convert_data(image_data)
-                    if compressed_image is None:
-                        logging.error("Failed to convert image data")
-                        continue
-
-                    unit_data['image_sources'].append(compressed_image)
-
-    # Insert data into the database
-            insert_into_db(compressed_image, price, beds, ratings)
-
             data.append(unit_data)
+
     except Exception as e:
-            logging.error(f"Error during scraping: {e}")
-            raise ScrapingError("Error occurred during scraping")
+        logging.error(f"Error during scraping: {e}")
+        raise ScrapingError("Error occurred during scraping")
     finally:
         driver.quit()
+
     return data
 
+
 # Example usage:
-vrbo_url = "https://www.vrbo.com/search?adults=2&d1=&d2=&destination=Seattle+%28and+vicinity%29%2C+Washington%2C" \
-           "+United+States+of+America&endDate=&regionId=178307&semdtl=&sort=RECOMMENDED&startDate=& "
-max_pages = 5
-
-
-
+airbnb_url = "https://www.airbnb.com/s/Seattle--WA--United-States/homes"
+max_pages = 5  # Number of pages to scrape, set to None to scrape all available pages
+scraped_data = scrape_airbnb(airbnb_url, max_pages)
+print(scraped_data)
