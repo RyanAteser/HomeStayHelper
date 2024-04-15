@@ -74,14 +74,7 @@ kv = """
             text: root.ratings
             halign: 'center'
             theme_text_color: "Primary"
-<ListingInfo>
-    
-    text: "Listing info"
-    MDButton:
-    style: "filled"
 
-    MDButtonText:
-        text: "Go to Website"
         
     
 """
