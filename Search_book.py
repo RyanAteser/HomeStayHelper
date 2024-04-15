@@ -16,24 +16,79 @@ import tempfile
 logging.basicConfig(level=logging.INFO)
 
 
+# Define custom exceptions
+class ScrapingError(Exception):
+    pass
+
+
+class DatabaseError(Exception):
+    pass
+
+
+def convert_data(image_data):
+    try:
+        # Create a BytesIO object from image_data
+        image_stream = BytesIO(image_data)
+
+        # Open image using PIL
+        img = Image.open(image_stream)
+
+        # Create a temporary file to save the image
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
+        temp_file_path = temp_file.name
+
+        # Save the image to the temporary file
+        img.save(temp_file_path, format='JPEG', quality=50)  # Adjust quality as needed
+
+        # Close the temporary file
+        temp_file.close()
+
+        # Return the path of the temporary file
+        return temp_file_path
+
+    except Exception as e:
+        logging.error(f"Error converting image data: {e}")
+        return None
+
+
+def insert_into_db(image_data, price, beds, ratings):
+    conn = sqlite3.connect('data/listing_data.db')
+    cursor = conn.cursor()
+    try:
+        query = '''
+            INSERT INTO vrbo_listings (image_source, price, beds, ratings) VALUES (?, ?, ?, ?)
+        '''
+        data_tuple = (image_data, price, beds, ratings)
+        cursor.execute(query, data_tuple)
+        conn.commit()
+        logging.info("Insertion Successful")
+    except sqlite3.Error as error:
+        logging.error(f"Failed to insert data: {error}")
+        raise DatabaseError("Database error occurred")
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def scrape_booking(url):
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
     try:
         driver.get(url)
         data = []
-        WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button:contains('Dismiss sign in information.')"))).click()
 
-        WebDriverWait(driver, 30).until(EC.element_to_be_clickable((By.CSS_SELECTOR, "button:contains('Dismiss sign in information.')"))).click()
+        # Dismiss sign-in information if present
+        try:
+            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CLASS_NAME, "modal-mask__button"))).click()
+        except:
+            pass
 
         # Wait until the hotel list is loaded
         WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "img")))
 
         # Parse the page source with BeautifulSoup
         soup = BeautifulSoup(driver.page_source, 'html.parser')
-        hotel_list = soup.find_all('div', class_='sr_property_block')
-        #Button to show price.
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-stid='apply-date-selector']"))).click()
+        hotel_list = soup.find_all('div', class_='c066246e13 d8aec464ca')
+
         logging.info(f"Scraping URL: {url}")
 
         for hotel in hotel_list:
@@ -42,15 +97,15 @@ def scrape_booking(url):
             image_source = image.get('src') if image else None
 
             # Extracting price per night
-            price_element = hotel.find('div', class_='ac4a7896c7')
+            price_element = hotel.find('div', class_='a4b53081e1')
             price = price_element.text.strip() if price_element else "Not available"
 
             # Extracting number of beds
-            beds_element = hotel.find('div', class_='abf093bdfe')
+            beds_element = hotel.find('div', class_='fc367255e6')
             beds = beds_element.text.strip() if beds_element else "Not available"
 
             # Extracting ratings
-            ratings_element = hotel.find('div', class_='ac4a7896c7')
+            ratings_element = hotel.find('div', class_='a3b8729ab1 d86cee9b25')
             ratings = ratings_element.text.strip() if ratings_element else "Not available"
 
             unit_data = {
@@ -71,6 +126,14 @@ def scrape_booking(url):
     return data
 
 
+checkOut = "2024-05-08"
+checkIn = "2024-05-05"
 # Example usage:
-booking_url = "https://www.booking.com/searchresults.en-gb.html?ss=Kyoto&ssne=Kyoto&ssne_untouched=Kyoto&efdco=1&label=gen173nr-1FCAEoggI46AdIM1gEaHWIAQGYAQm4ARnIAQzYAQHoAQH4AQKIAgGoAgO4Av_ktfIFwAIB0gIkNWI0YzU1Y2EtMjBmYS00NzNkLThkMjEtMjQxYmI5Nzg3YTRh2AIF4AIB&sid=36885a1972ccca576d195bcd6f2a9d80&aid=304142&lang=en-gb&sb=1&src_elem=sb&src=searchresults&dest_id=-235402&dest_type=city&group_adults=1&no_rooms=1&group_children=0"
-scrape_booking(booking_url)
+booking_url = f"https://www.booking.com/searchresults.html?ss=Kyoto&ssne=Kyoto&ssne_untouched=Kyoto&efdco=1&label" \
+              f"=gen173nr-1FCAEoggI46AdIM1gEaLQCiAEBmAExuAEXyAEM2AEB6AEB" \
+              f"-AECiAIBqAIDuAKaq_awBsACAdICJGZkNTIwZTFmLTZiODItNGM1ZS05Mzk1LTM2ZTNhNTE0Y2U3YtgCBeACAQ&aid=304142" \
+              f"&lang=en-us&sb=1&src_elem=sb&src=searchresults&dest_id=-235402&dest_type=city&checkin=" \
+              f"{checkIn}&checkout={checkOut}&group_adults=2&no_rooms=1&group_children=0 "
+print(scrape_booking(booking_url))
+
+
