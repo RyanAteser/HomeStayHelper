@@ -15,12 +15,15 @@ import tempfile
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 
+
 # Define custom exceptions
 class ScrapingError(Exception):
     pass
 
+
 class DatabaseError(Exception):
     pass
+
 
 def convert_data(image_data):
     try:
@@ -35,7 +38,7 @@ def convert_data(image_data):
         temp_file_path = temp_file.name
 
         # Save the image to the temporary file
-        img.save(temp_file_path, format='JPEG', quality=50)  # Adjust quality as needed
+        img.save(temp_file_path, format='JPEG', quality=200)  # Adjust quality as needed
 
         # Close the temporary file
         temp_file.close()
@@ -46,6 +49,7 @@ def convert_data(image_data):
     except Exception as e:
         logging.error(f"Error converting image data: {e}")
         return None
+
 
 def insert_into_db(image_data, price, beds, ratings):
     conn = sqlite3.connect('data/listing_data.db')
@@ -64,6 +68,7 @@ def insert_into_db(image_data, price, beds, ratings):
     finally:
         cursor.close()
         conn.close()
+
 
 def scrape_vrbo(url, max_pages=None):
     # Initialize Selenium WebDriver
@@ -89,26 +94,28 @@ def scrape_vrbo(url, max_pages=None):
         logging.info(f"Scraping URL: {url}")
 
         for listing in listings:
-    # Extracting image sources
+            # Extracting image sources
             ab_img = listing.find_all('img', class_='uitk-image-media')
 
-    # Extracting price per night
-            ab_price_per_night = listing.find('div', class_='uitk-text uitk-type-300 uitk-text-default-theme is-visually-hidden')
+            # Extracting price per night
+            ab_price_per_night = listing.find('div',
+                                              class_='uitk-text uitk-type-300 uitk-text-default-theme is-visually-hidden')
             price = ab_price_per_night.text.strip() if ab_price_per_night else "Not available"
 
-    # Extracting number of beds
-            ab_beds = listing.find('div', class_='uitk-text uitk-text-spacing-half truncate-lines-2 uitk-type-300 uitk-text-default-theme')
+            # Extracting number of beds
+            ab_beds = listing.find('div',
+                                   class_='uitk-text uitk-text-spacing-half truncate-lines-2 uitk-type-300 uitk-text-default-theme')
             beds = ab_beds.text.strip() if ab_beds else "Not available"
 
-    # Extracting ratings
+            # Extracting ratings
             ab_ratings = listing.find('span', class_='uitk-text uitk-type-500 uitk-type-bold uitk-text-default-theme')
             ratings = ab_ratings.text.strip() if ab_ratings else "Not available"
 
             unit_data = {
-        'image_sources': [],
-        'price': price,
-        'beds': beds,
-        'ratings': ratings
+                'image_sources': [],
+                'price': price,
+                'beds': beds,
+                'ratings': ratings
             }
 
             for img in ab_img:
@@ -124,21 +131,20 @@ def scrape_vrbo(url, max_pages=None):
 
                     unit_data['image_sources'].append(compressed_image)
 
-    # Insert data into the database
+            # Insert data into the database
             insert_into_db(compressed_image, price, beds, ratings)
 
             data.append(unit_data)
     except Exception as e:
-            logging.error(f"Error during scraping: {e}")
-            raise ScrapingError("Error occurred during scraping")
+        logging.error(f"Error during scraping: {e}")
+        raise ScrapingError("Error occurred during scraping")
     finally:
         driver.quit()
     return data
+
 
 # Example usage:
 vrbo_url = "https://www.vrbo.com/search?adults=2&d1=&d2=&destination=Seattle+%28and+vicinity%29%2C+Washington%2C" \
            "+United+States+of+America&endDate=&regionId=178307&semdtl=&sort=RECOMMENDED&startDate=& "
 max_pages = 5
-
-
-
+#scrape_vrbo(vrbo_url)
