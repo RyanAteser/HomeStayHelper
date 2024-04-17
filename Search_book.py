@@ -38,7 +38,7 @@ def convert_data(image_data):
         temp_file_path = temp_file.name
 
         # Save the image to the temporary file
-        img.save(temp_file_path, format='JPEG', quality=50)  # Adjust quality as needed
+        img.save(temp_file_path, format='JPEG', quality=200)  # Adjust quality as needed
 
         # Close the temporary file
         temp_file.close()
@@ -70,60 +70,52 @@ def insert_into_db(image_data, price, beds, ratings):
         conn.close()
 
 
+import logging
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+
 def scrape_booking(url):
+    logging.basicConfig(level=logging.INFO)
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
+
     try:
         driver.get(url)
-        data = []
-
-        # Dismiss sign-in information if present
-        try:
-            WebDriverWait(driver, 5).until(EC.element_to_be_clickable((By.CLASS_NAME, "modal-mask__button"))).click()
-        except:
-            pass
-
-        # Wait until the hotel list is loaded
         WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "img")))
-
-        # Parse the page source with BeautifulSoup
         soup = BeautifulSoup(driver.page_source, 'html.parser')
         hotel_list = soup.find_all('div', class_='c066246e13 d8aec464ca')
 
-        logging.info(f"Scraping URL: {url}")
-
+        data = []
         for hotel in hotel_list:
-            # Extracting image sources
             image = hotel.find('img', class_='f9671d49b1')
-            image_source = image.get('src') if image else None
-
-            # Extracting price per night
             price_element = hotel.find('div', class_='a4b53081e1')
-            price = price_element.text.strip() if price_element else "Not available"
-
-            # Extracting number of beds
             beds_element = hotel.find('div', class_='fc367255e6')
-            beds = beds_element.text.strip() if beds_element else "Not available"
-
-            # Extracting ratings
             ratings_element = hotel.find('div', class_='a3b8729ab1 d86cee9b25')
-            ratings = ratings_element.text.strip() if ratings_element else "Not available"
 
             unit_data = {
-                'image_source': image_source,
-                'price': price,
-                'beds': beds,
-                'ratings': ratings
+                'image_source': image.get('src') if image else None,
+                'price': price_element.text.strip() if price_element else "Not available",
+                'beds': beds_element.text.strip() if beds_element else "Not available",
+                'ratings': ratings_element.text.strip() if ratings_element else "Not available"
             }
-
             data.append(unit_data)
 
+        if not data:
+            logging.warning("No data fetched from the URL.")
+            return None
+
+        return data
     except Exception as e:
-        logging.error(f"Error during scraping: {e}")
-        raise Exception("Error occurred during scraping")
+        logging.error("Failed to scrape data due to an error.", exc_info=True)
+        raise
     finally:
         driver.quit()
 
-    return data
+# Example usage of the function
 
 
 checkOut = "2024-05-08"
@@ -134,6 +126,6 @@ booking_url = f"https://www.booking.com/searchresults.html?ss=Kyoto&ssne=Kyoto&s
               f"-AECiAIBqAIDuAKaq_awBsACAdICJGZkNTIwZTFmLTZiODItNGM1ZS05Mzk1LTM2ZTNhNTE0Y2U3YtgCBeACAQ&aid=304142" \
               f"&lang=en-us&sb=1&src_elem=sb&src=searchresults&dest_id=-235402&dest_type=city&checkin=" \
               f"{checkIn}&checkout={checkOut}&group_adults=2&no_rooms=1&group_children=0 "
-print(scrape_booking(booking_url))
+
 
 
