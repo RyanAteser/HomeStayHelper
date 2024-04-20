@@ -1,16 +1,16 @@
+# scraping_script.py
 import logging
-from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.webdriver.support.ui import WebDriverWait
 from webdriver_manager.chrome import ChromeDriverManager
-import requests
 from PIL import Image
 import sqlite3
 from io import BytesIO
 import tempfile
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -21,8 +21,51 @@ class ScrapingError(Exception):
     pass
 
 
-class DatabaseError(Exception):
-    pass
+def fetch_images_from_carousel(driver, listing_element):
+    images = set()  # Using a set to avoid duplicate images if the carousel loops
+
+    # Selectors based on your provided button elements
+    next_button_selector = "button.uitk-gallery-carousel-button-next"
+    prev_button_selector = "button.uitk-gallery-carousel-button-prev"
+
+    try:
+        # Initial collection of image
+
+        initial_img = WebDriverWait(listing_element, 10).until(
+            EC.visibility_of_element_located((By.CSS_SELECTOR, "img.uitk-image-media"))
+        )
+        images.add(initial_img.get_attribute('src'))
+
+        next_button = listing_element.find_element(By.CSS_SELECTOR, next_button_selector)
+
+        # Function to navigate and collect images
+        def navigate_and_collect():
+            try:
+                next_button.click()
+                WebDriverWait(driver, 20).until(
+                    EC.visibility_of_element_located((By.CSS_SELECTOR, "img.uitk-image-media"))
+                )
+                img = listing_element.find_element(By.CSS_SELECTOR, "img.uitk-image-media")
+                return img.get_attribute('src')
+            except NoSuchElementException:
+                print("Navigation button not found.")
+                return None
+
+        # Loop through carousel by clicking 'next' until we hit the first image again
+        while True:
+            src = navigate_and_collect()
+            if src in images:  # Break if we see the same image again, indicating we've looped around
+                break
+            if src:
+                images.add(src)
+
+    except TimeoutException:
+        print("Timeout waiting for images in the carousel.")
+
+    except Exception as e:
+        print(f"An error occurred: {e}")
+
+    return list(images)  # Convert set back to list for consistency
 
 
 def convert_data(image_data):
@@ -38,7 +81,7 @@ def convert_data(image_data):
         temp_file_path = temp_file.name
 
         # Save the image to the temporary file
-        img.save(temp_file_path, format='JPEG', quality=200)  # Adjust quality as needed
+        img.save(temp_file_path, format='JPEG', quality=50)  # Adjust quality as needed
 
         # Close the temporary file
         temp_file.close()
@@ -51,100 +94,54 @@ def convert_data(image_data):
         return None
 
 
-def insert_into_db(image_data, price, beds, ratings):
+def insert_into_db(listing_id, images):
     conn = sqlite3.connect('data/listing_data.db')
     cursor = conn.cursor()
     try:
-        query = '''
-            INSERT INTO vrbo_listings (image_source, price, beds, ratings) VALUES (?, ?, ?, ?)
-        '''
-        data_tuple = (image_data, price, beds, ratings)
-        cursor.execute(query, data_tuple)
+        for image_path in images:
+            cursor.execute(
+                "INSERT INTO images (listing_id, image_path) VALUES (?, ?)",
+                (listing_id, image_path)
+            )
         conn.commit()
-        logging.info("Insertion Successful")
-    except sqlite3.Error as error:
-        logging.error(f"Failed to insert data: {error}")
-        raise DatabaseError("Database error occurred")
     finally:
         cursor.close()
         conn.close()
 
 
 def scrape_vrbo(url, max_pages=None):
-    # Initialize Selenium WebDriver
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
     try:
         driver.get(url)
-        data = []
-
-        page_count = 0
         WebDriverWait(driver, 10).until(
             EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-stid='apply-date-selector']"))).click()
 
         # Simulate scrolling to trigger lazy loading
         driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located(
+            (By.CSS_SELECTOR, "div.uitk-spacing.uitk-spacing-margin-blockstart-three")))
 
-        # Wait for images to load
-        WebDriverWait(driver, 10).until(EC.presence_of_all_elements_located((By.TAG_NAME, "img")))
+        listings = driver.find_elements(By.CSS_SELECTOR, "div.uitk-spacing.uitk-spacing-margin-blockstart-three")
+        scraped_data = []
+        for listing_index, listing in enumerate(listings):
+            images = fetch_images_from_carousel(driver, listing)
+            listing_id = f"listing_{listing_index}"  # Generate unique listing_id
 
-        # Parse the page source with BeautifulSoup
-        soup = BeautifulSoup(driver.page_source, 'html.parser')
-        listings = soup.find_all('div', class_='uitk-spacing uitk-spacing-margin-blockstart-three')
+            # Extract the listing URL
+            url_element = None
+            try:
+                url_element = listing.find_element(By.CSS_SELECTOR, "a[data-stid='open-hotel-information']")
+            except NoSuchElementException:
+                logging.warning("Listing URL element not found")
 
-        logging.info(f"Scraping URL: {url}")
+            listing_url = url_element.get_attribute("href") if url_element else None
 
-        for listing in listings:
-            # Extracting image sources
-            ab_img = listing.find_all('img', class_='uitk-image-media')
+            scraped_data.append({'listing_id': listing_id, 'listing_url': listing_url, 'image_sources': images})
 
-            # Extracting price per night
-            ab_price_per_night = listing.find('div',
-                                              class_='uitk-text uitk-type-300 uitk-text-default-theme is-visually-hidden')
-            price = ab_price_per_night.text.strip() if ab_price_per_night else "Not available"
+        return scraped_data
 
-            # Extracting number of beds
-            ab_beds = listing.find('div',
-                                   class_='uitk-text uitk-text-spacing-half truncate-lines-2 uitk-type-300 uitk-text-default-theme')
-            beds = ab_beds.text.strip() if ab_beds else "Not available"
-
-            # Extracting ratings
-            ab_ratings = listing.find('span', class_='uitk-text uitk-type-500 uitk-type-bold uitk-text-default-theme')
-            ratings = ab_ratings.text.strip() if ab_ratings else "Not available"
-
-            unit_data = {
-                'image_sources': [],
-                'price': price,
-                'beds': beds,
-                'ratings': ratings
-            }
-
-            for img in ab_img:
-                src = img.get('src')
-
-                if src:
-                    response = requests.get(src)
-                    image_data = response.content
-                    compressed_image = convert_data(image_data)
-                    if compressed_image is None:
-                        logging.error("Failed to convert image data")
-                        continue
-
-                    unit_data['image_sources'].append(compressed_image)
-
-            # Insert data into the database
-            insert_into_db(compressed_image, price, beds, ratings)
-
-            data.append(unit_data)
     except Exception as e:
         logging.error(f"Error during scraping: {e}")
         raise ScrapingError("Error occurred during scraping")
     finally:
         driver.quit()
-    return data
-
-
-# Example usage:
-vrbo_url = "https://www.vrbo.com/search?adults=2&d1=&d2=&destination=Seattle+%28and+vicinity%29%2C+Washington%2C" \
-           "+United+States+of+America&endDate=&regionId=178307&semdtl=&sort=RECOMMENDED&startDate=& "
-max_pages = 5
-#scrape_vrbo(vrbo_url)
