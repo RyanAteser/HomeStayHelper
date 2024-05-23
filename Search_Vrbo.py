@@ -1,163 +1,207 @@
 import logging
+import re
+import sqlite3
+import time
+from random import random
+
 from selenium import webdriver
+from selenium.common import TimeoutException
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.common.exceptions import NoSuchElementException, TimeoutException
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-import sqlite3
-import Create_DATA_TABLE
+from webdriver_manager.chrome import ChromeDriverManager
 
+# Setting up logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
-class ScrapingError(Exception):
-    pass
+def scroll_page(driver):
+    """Scrolls the webpage to trigger lazy loading."""
+    logging.info("Starting to scroll the page.")
+    last_height = driver.execute_script("return document.body.scrollHeight")
+    while True:
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+        time.sleep(3)
+        new_height = driver.execute_script("return document.body.scrollHeight")
+        if new_height == last_height:
+            break
+        last_height = new_height
+    logging.info("Finished scrolling the page.")
 
 
-class ScrapingError(Exception):
-    pass
+def load_complete_page(driver):
+    """Simulate user interaction to trigger all lazy-loaded items."""
+    try:
+        body = WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+        for _ in range(20):
+            body.send_keys(Keys.PAGE_DOWN)
+            WebDriverWait(driver, 1).until(lambda d: d.execute_script('return document.readyState') == 'complete')
+    except TimeoutException:
+        logging.error("Page did not load new content in time.")
+    except KeyboardInterrupt:
+        logging.info("Process was manually interrupted by user.")
+        raise
 
 
-def fetch_images_from_carousel(driver):
-    images = set()
+def fetch_images_from_carousel(driver, listing):
+    """Fetches image sources from a listing using JavaScript."""
+    images = []
+    driver.execute_script("arguments[0].scrollIntoView();", listing)
+
+    try:
+        # Find the initial set of images in the carousel
+        img_elements = listing.find_elements(By.CSS_SELECTOR, "img")
+        for img in img_elements:
+            src = img.get_attribute('src')
+            if src:
+                images.append(src)
+                logging.info(f"Found image: {src}")
+
+        # Find the next button in the carousel and click it to get more images
+        next_button = listing.find_element(By.CSS_SELECTOR, "button[aria-label^='Next photo']")
+        while next_button and next_button.get_attribute('aria-disabled') != 'true':
+            # Click using JavaScript to avoid interception issues
+            driver.execute_script("arguments[0].click();", next_button)
+            time.sleep(random.uniform(1, 3))  # Random delay to mimic human interaction
+            img_elements = listing.find_elements(By.CSS_SELECTOR, "img")
+            for img in img_elements:
+                src = img.get_attribute('src')
+                if src and src not in images:
+                    images.append(src)
+                    logging.info(f"Found image: {src}")
+
+            try:
+                next_button = listing.find_element(By.CSS_SELECTOR, "button[aria-label^='Next photo']")
+            except Exception:
+                break
+
+    except Exception as e:
+        logging.error(f"Error fetching images: {e}")
+
+    if not images:
+        logging.info("No suitable images found for this listing.")
+    return images
+
+
+def insert_or_update_listing_data(conn, table_name, listing_id, images, price, title, beds, ratings, link):
+    """Insert or update listing data in the database."""
+    images = ",".join(images) if images else "No Image Available"
+    data = (listing_id, images, price, title, beds, ratings, link)
+    sql_insert_or_update = f"""
+    REPLACE INTO {table_name} (listing_id, image_url, price, title, beds, ratings, link) VALUES (?, ?, ?, ?, ?, ?, ?);
+    """
+    try:
+        c = conn.cursor()
+        c.execute(sql_insert_or_update, data)
+        conn.commit()
+        logging.info("Data successfully saved.")
+    except sqlite3.Error as e:
+        logging.error(f"An error occurred during data insertion: {e}")
+
+
+def sanitize_state_name(state_name):
+    """Sanitize and format state name to create a valid and consistent SQL table name."""
+    sanitized = re.sub(r'[^a-zA-Z]', '', state_name)  # Remove all non-alphabetic characters
+    return sanitized.lower()
+
+
+def ensure_table_exists(conn, state_name):
+    """Ensure that a table for the specified state exists in the database."""
+    table_name = sanitize_state_name(state_name)
+    sql_create_table = f"""
+    CREATE TABLE IF NOT EXISTS {table_name} (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        listing_id TEXT UNIQUE,
+        image_url TEXT,
+        price TEXT,
+        title TEXT,
+        beds TEXT,
+        ratings TEXT,
+        link TEXT
+    );
+    """
+    try:
+        c = conn.cursor()
+        c.execute(sql_create_table)
+        conn.commit()
+        logging.info(f"Table '{table_name}' is ready for use or already exists.")
+    except sqlite3.Error as e:
+        logging.error(f"An error occurred: {e}")
+    return table_name
+
+
+def fetch_listing_details(driver, state_name):
+    """Fetch listing details from the VRBO website."""
+    db_path = 'data/listing_data.db'
+    conn = sqlite3.connect(db_path)
+    table_name = ensure_table_exists(conn, state_name)
+
+    url = f"https://www.vrbo.com/search?keyword={state_name}"
+    driver.get(url)
     try:
         WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, ".uitk-image-media"))
-        )
-        initial_src = driver.find_element(By.CSS_SELECTOR, ".uitk-image-media").get_attribute('src')
-        images.add(initial_src)
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-stid='apply-date-selector']"))
+        ).click()
+    except Exception as e:
+        logging.error(f"Timeout or other error: {e}")
+        driver.refresh()
+        WebDriverWait(driver, 10).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-stid='apply-date-selector']"))
+        ).click()
 
-        while True:
-            next_button = driver.find_element(By.CSS_SELECTOR, ".uitk-gallery-carousel-button-next")
-            if not next_button:
-                break
-            next_button.click()
-            WebDriverWait(driver, 5).until(
-                lambda driver: driver.find_element(By.CSS_SELECTOR, ".uitk-image-media").get_attribute(
-                    'src') != initial_src
-            )
-            new_src = driver.find_element(By.CSS_SELECTOR, ".uitk-image-media").get_attribute('src')
-            if new_src in images:
-                break
-            images.add(new_src)
-            initial_src = new_src
-    except (TimeoutException, NoSuchElementException) as e:
-        logging.warning("Issues encountered while fetching images from carousel: {}".format(e))
-    return list(images)
+    scroll_page(driver)
+    load_complete_page(driver)
+    logging.info("Loading Complete")
 
+    WebDriverWait(driver, 10).until(
+        EC.presence_of_all_elements_located((By.CSS_SELECTOR, "div[data-stid='lodging-card-responsive']"))
+    )
+    listings = driver.find_elements(By.CSS_SELECTOR, "div[data-stid='lodging-card-responsive']")
 
-def safe_find_element(driver, css_selector, timeout=10, attribute=None):
-    try:
-        element = WebDriverWait(driver, timeout).until(
-            EC.presence_of_element_located((By.CSS_SELECTOR, css_selector))
-        )
-        return element.get_attribute(attribute) if attribute else element.text
-    except TimeoutException:
-        logging.warning(f"Timeout waiting for element with selector: {css_selector}")
-        return "N/A"
+    for listing in listings:
+        try:
+            link = listing.find_element(By.CSS_SELECTOR, "a[data-stid='open-hotel-information']")
+            href = link.get_attribute('href')
+            listing_id = re.search(r'expediaPropertyId=(\d+)', href).group(1) if href else "No ID Found"
 
+            price = listing.find_element(By.CSS_SELECTOR, "span[data-stid='price-summary-message-line']").text
+            title = listing.find_element(By.CSS_SELECTOR,
+                                         "h3.uitk-heading.uitk-heading-5.overflow-wrap.uitk-layout-grid-item.uitk-layout-grid-item-has-row-start").text
+            beds = listing.find_element(By.CSS_SELECTOR,
+                                        "div.uitk-text.uitk-text-spacing-half.truncate-lines-2.uitk-type-300.uitk-text-default-theme").text
+            ratings = listing.find_element(By.CSS_SELECTOR, "span.is-visually-hidden").text
 
-def insert_or_update_listing_data(table_name, listing_id, images, price, beds, ratings):
-    with sqlite3.connect('data/listing_data.db') as conn:
-        c = conn.cursor()
-        c.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
-        if not c.fetchone():
-            Create_DATA_TABLE.create_db(table_name)
-        first_image = images[0] if images else "No Image Available"
-        data = (first_image, price, beds, ratings, listing_id)
-        c.execute(f"REPLACE INTO {table_name} (image_url, price, beds, ratings, listing_id) VALUES (?, ?, ?, ?, ?)",
-                  data)
-        conn.commit()
+            images = fetch_images_from_carousel(driver, listing)
+            insert_or_update_listing_data(conn, table_name, listing_id, images, price, title, beds, ratings, href)
+        except Exception as e:
+            logging.error(f"Error processing listing: {e}")
 
-
-def fetch_listing_details(driver):
-    """Fetches price, beds, and ratings of a listing."""
-    try:
-        price = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.XPATH,
-                                              "//div[contains(@class, 'uitk-text uitk-type-300 uitk-text-default-theme is-visually-hidden')]"))
-        ).text
-        beds = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.XPATH,
-                                              "//div[contains(@class, 'uitk-text uitk-text-spacing-half truncate-lines-2 uitk-type-300 uitk-text-default-theme')]"))
-        ).text
-        ratings = WebDriverWait(driver, 10).until(
-            EC.visibility_of_element_located((By.XPATH,
-                                              "//span[contains(@class, 'uitk-text uitk-type-300 uitk-type-bold uitk-text-default-theme')]"))
-        ).text
-    except TimeoutException as e:
-        logging.warning(f"Timeout occurred while fetching details for a listing: {e}")
-        price, beds, ratings = "N/A", "N/A", "N/A"
-    return price, beds, ratings
+    conn.close()
 
 
 def read_states_from_file(file_path):
+    """Read state names from a file."""
     with open(file_path, 'r') as file:
         states = [line.strip() for line in file if line.strip()]
     return states
 
 
-def scrape_vrbo(state_name, table_name):
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()))
-    url = f"https://www.vrbo.com/search?keyword={state_name}"
-
-    try:
-        driver.get(url)
-        WebDriverWait(driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-stid='apply-date-selector']"))
-        ).click()
-        listings = WebDriverWait(driver, 10).until(
-            EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".uitk-spacing.uitk-spacing-margin-blockstart-three"))
-        )
-
-        for listing_index, listing in enumerate(listings):
-
-            images = fetch_images_from_carousel(driver)
-            url = safe_find_element(driver, "a[data-stid='open-hotel-information']", attribute='href')
-            print("Extracted URL:", url)
-
-            print(images)
-            from urllib.parse import urlparse, parse_qs
-
-            base_url = "https://www.vrbo.com"
-            full_url = base_url + url
-            parsed_url = urlparse(full_url)
-            query_params = parse_qs(parsed_url.query)
-
-            listing_id = query_params.get('expediaPropertyId', [''])[0]
-            print(listing_id)
-            try:
-                price = WebDriverWait(driver, 10).until(
-                    EC.visibility_of_element_located((By.XPATH,
-                                                      "//div[contains(@class, 'uitk-text uitk-type-300 uitk-text-default-theme is-visually-hidden')]"))
-                ).text
-                print(price)
-                beds = WebDriverWait(driver, 10).until(
-                    EC.visibility_of_element_located((By.XPATH,
-                                                      "//div[contains(@class, 'uitk-text uitk-text-spacing-half truncate-lines-2 uitk-type-300 uitk-text-default-theme')]"))
-                ).text
-                print(beds)
-                ratings = WebDriverWait(driver, 10).until(
-                    EC.visibility_of_element_located((By.XPATH,
-                                                      "//span[contains(@class, 'uitk-text uitk-type-300 uitk-type-bold uitk-text-default-theme')]"))
-                ).text
-                print(ratings)
-                insert_or_update_listing_data(table_name, listing_id, images, price, beds, ratings)
-            except TimeoutException as e:
-                logging.warning(f"Timeout occurred while fetching details for a listing: {e}")
-    except Exception as e:
-        logging.error(f"Error processing a listing: {e}")
-    finally:
-        driver.quit()
-
-
 if __name__ == "__main__":
     file_path = r"C:\Users\rcate\Downloads\WebScraper-main (2)\WebScraper-main\Scripts\List_states.txt"
-    states = read_states_from_file(file_path)
+    options = Options()
+    options.add_argument("--disable-blink-features=AutomationControlled")
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
 
+    states = read_states_from_file(file_path)
     for state_name in states:
         logging.info(f"Starting to scrape data for {state_name}")
-        scrape_vrbo(state_name, f"{state_name}")
-        logging.info(f"Finished scraping data for {state_name}")
+        fetch_listing_details(driver, state_name)
+        time.sleep(5)
+
+    driver.quit()
+    logging.info("Web scraping session ended.")
+
